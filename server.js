@@ -2,15 +2,23 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const webpush = require('web-push');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
-app.set('trust proxy', 1); // Render sits behind one reverse proxy — trust its X-Forwarded-For so rate limits key on the real client IP, not Render's shared proxy IP.
+app.set('trust proxy', 2); // Render fronts every request with Cloudflare, then its own load balancer — two hops before the app.
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Render's traffic passes through Cloudflare first. Cloudflare sets
+// CF-Connecting-IP authoritatively at its edge — a client can send a fake one,
+// but Cloudflare overwrites it before we ever see the request, so it's a
+// reliable per-visitor key even though Render's own proxy hop count can vary.
+function clientKey(req) {
+  return ipKeyGenerator(req.headers['cf-connecting-ip'] || req.ip);
+}
 
 // General ceiling on API traffic per IP — generous enough for normal multi-device
 // household use, tight enough to blunt scripted abuse.
@@ -19,6 +27,7 @@ const generalLimiter = rateLimit({
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: clientKey,
   message: { error: 'Too many requests. Please slow down and try again shortly.' },
 });
 app.use('/api/', generalLimiter);
@@ -31,6 +40,7 @@ const codeGuessLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: clientKey,
   message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
 });
 
