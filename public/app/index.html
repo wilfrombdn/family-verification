@@ -59,7 +59,7 @@
     <img src="/app/icon.svg" class="brand-logo" alt="">
     <div>
       <h1>Family Verify</h1>
-      <p class="sub">Prove a phone call is really them &mdash; before anyone sends money.</p>
+      <p class="sub">Confirm your family member's own device is on this call &mdash; before anyone sends money.</p>
     </div>
   </div>
 
@@ -84,10 +84,20 @@
     <input id="join-code" placeholder="e.g. AB3CQ9" maxlength="24" style="text-transform:uppercase">
     <label class="field-label" for="join-your-name">Your name</label>
     <input id="join-your-name" placeholder="Your name" maxlength="40">
-    <button class="btn primary" id="btn-join-circle">Join Circle</button>
+    <button class="btn primary" id="btn-join-circle">Request to Join</button>
+    <p class="hint">The circle owner has to approve you before you can send or answer verifications.</p>
   </div>
 
   <p id="onboarding-error" class="error hidden"></p>
+</section>
+
+<!-- JOIN: waiting for owner approval -->
+<section id="view-join-waiting" class="view hidden">
+  <div class="challenge-box">
+    <div class="spinner"></div>
+    <div class="challenge-label">Waiting for <span id="join-waiting-circle-name"></span> to approve your request&hellip;</div>
+  </div>
+  <button class="btn ghost" id="btn-join-waiting-cancel">Cancel</button>
 </section>
 
 <!-- HOME -->
@@ -98,6 +108,11 @@
       <div class="circle-code">Code: <b id="home-circle-code"></b></div>
     </div>
     <button class="icon-btn" id="btn-leave" title="Leave circle"><svg><use href="#icon-log-out"/></svg></button>
+  </div>
+
+  <div id="home-pending-section" class="hidden">
+    <h2>Join requests</h2>
+    <div class="member-list pending" id="home-pending-list"></div>
   </div>
 
   <div class="member-list" id="home-roster"></div>
@@ -135,6 +150,7 @@
 <section id="view-verify-result" class="view hidden">
   <div class="result-box" id="verify-result-box">
     <div class="result-icon" id="verify-result-icon"></div>
+    <div class="result-status" id="verify-result-status"></div>
     <div class="result-title" id="verify-result-title"></div>
     <div class="result-sub" id="verify-result-sub"></div>
   </div>
@@ -173,6 +189,7 @@
 <section id="view-money-result" class="view hidden">
   <div class="result-box" id="money-result-box">
     <div class="result-icon" id="money-result-icon"></div>
+    <div class="result-status" id="money-result-status"></div>
     <div class="result-title" id="money-result-title"></div>
     <div class="result-sub" id="money-result-sub"></div>
   </div>

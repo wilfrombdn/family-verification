@@ -1,7 +1,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
-  const views = ['onboarding', 'home', 'verify-picker', 'verify-active', 'verify-result', 'money-picker', 'money-waiting', 'money-incoming', 'money-result'];
+  const views = ['onboarding', 'join-waiting', 'home', 'verify-picker', 'verify-active', 'verify-result', 'money-picker', 'money-waiting', 'money-incoming', 'money-result'];
   function showView(name) {
     for (const v of views) $(`view-${v}`).classList.toggle('hidden', v !== name);
   }
@@ -18,9 +18,10 @@
     if (navigator.vibrate) navigator.vibrate(pattern);
   }
 
-  function requestNotificationPermission() {
+  async function requestNotificationPermission() {
     if (!('Notification' in window)) return;
-    if (Notification.permission === 'default') Notification.requestPermission();
+    if (Notification.permission === 'default') await Notification.requestPermission();
+    if (Notification.permission === 'granted') setupPush();
   }
 
   function notifyOS(title, body) {
@@ -31,6 +32,36 @@
       const n = new Notification(title, { body, icon: '/app/icon.png', requireInteraction: true, tag: 'family-verify' });
       n.onclick = () => { window.focus(); n.close(); };
     } catch { /* some platforms restrict direct Notification() construction; ignore */ }
+  }
+
+  // ---------- Real push (works even if the app/tab is fully closed) ----------
+  function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+  }
+
+  async function setupPush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    if (!state.circleId || !state.deviceId) return; // only meaningful once we're a real member
+    try {
+      const reg = await navigator.serviceWorker.register('/app/sw.js');
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const keyRes = await fetch('/api/push/vapid-public-key');
+        const { publicKey } = await keyRes.json();
+        if (!publicKey) return; // server has no VAPID keys configured
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) });
+      }
+      await api(`/api/circles/${state.circleId}/push-subscribe`, {
+        method: 'POST',
+        body: { deviceId: state.deviceId, subscription: sub.toJSON() },
+      });
+    } catch (e) {
+      console.warn('push setup failed', e);
+    }
   }
 
   function initials(name) {
@@ -62,10 +93,30 @@
     state = { circleId: null, deviceId: null, circleName: '', memberName: '' };
   }
 
+  // A join request that's awaiting owner approval — not a real member yet.
+  let pending = {
+    circleId: localStorage.getItem('fv_pendingCircleId') || null,
+    deviceId: localStorage.getItem('fv_pendingDeviceId') || null,
+    circleName: localStorage.getItem('fv_pendingCircleName') || '',
+  };
+  function persistPending() {
+    localStorage.setItem('fv_pendingCircleId', pending.circleId);
+    localStorage.setItem('fv_pendingDeviceId', pending.deviceId);
+    localStorage.setItem('fv_pendingCircleName', pending.circleName);
+  }
+  function clearPending() {
+    localStorage.removeItem('fv_pendingCircleId');
+    localStorage.removeItem('fv_pendingDeviceId');
+    localStorage.removeItem('fv_pendingCircleName');
+    pending = { circleId: null, deviceId: null, circleName: '' };
+  }
+
   let roster = []; // [{deviceId, name, isOwner}]
+  let pendingRequests = []; // [{deviceId, name, requestedAt}] — owner-only
   let currentVerifySession = null; // {sessionId, challenge, deadline, confirmWindowMs}
   let currentMoneyRequestId = null;
   let countdownTimer = null;
+  let joinPollTimer = null;
 
   function isOwner() {
     return roster.find((m) => m.deviceId === state.deviceId)?.isOwner === true;
@@ -85,12 +136,14 @@
 
   // ---------- WebSocket ----------
   let ws = null;
-  function connectWs() {
-    if (!state.deviceId) return;
+  let wsDeviceId = null;
+  function connectWs(deviceId) {
+    wsDeviceId = deviceId || state.deviceId || wsDeviceId;
+    if (!wsDeviceId) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ type: 'hello', deviceId: state.deviceId }));
+      ws.send(JSON.stringify({ type: 'hello', deviceId: wsDeviceId }));
     });
     ws.addEventListener('message', (ev) => {
       let msg;
@@ -98,7 +151,7 @@
       handleWsMessage(msg);
     });
     ws.addEventListener('close', () => {
-      setTimeout(connectWs, 2000);
+      setTimeout(() => connectWs(), 2000);
     });
     ws.addEventListener('error', () => ws.close());
   }
@@ -107,6 +160,18 @@
     if (msg.type === 'roster_update') {
       roster = msg.members;
       renderRoster();
+      refreshPending();
+    } else if (msg.type === 'join_requested') {
+      if (msg.circleId !== state.circleId || !isOwner()) return;
+      refreshPending();
+      toast(`${msg.name} wants to join.`);
+      vibrate([150, 80, 150]);
+    } else if (msg.type === 'join_approved') {
+      if (!pending.deviceId || msg.circleId !== pending.circleId) return;
+      handleJoinApproved(msg);
+    } else if (msg.type === 'join_denied') {
+      if (!pending.deviceId || msg.circleId !== pending.circleId) return;
+      handleJoinDenied();
     } else if (msg.type === 'kicked') {
       if (msg.circleId !== state.circleId) return;
       if (ws) ws.close();
@@ -217,11 +282,57 @@
     if (!code || !memberName) return showOnboardingError('Please fill in both fields.');
     try {
       const data = await api(`/api/circles/${code}/join`, { method: 'POST', body: { memberName } });
-      applyIdentity(data);
+      pending = { circleId: data.circleId, deviceId: data.deviceId, circleName: data.circleName };
+      persistPending();
+      connectWs(data.deviceId);
+      $('join-waiting-circle-name').textContent = data.circleName;
+      showView('join-waiting');
+      startJoinPolling();
     } catch (e) {
       showOnboardingError(e.message);
     }
   });
+
+  $('btn-join-waiting-cancel').addEventListener('click', () => {
+    stopJoinPolling();
+    clearPending();
+    showView('onboarding');
+  });
+
+  function startJoinPolling() {
+    stopJoinPolling();
+    joinPollTimer = setInterval(async () => {
+      try {
+        const data = await api(`/api/circles/${pending.circleId}/join-status/${pending.deviceId}`);
+        if (data.status === 'approved') handleJoinApproved(data);
+        else if (data.status === 'denied' || data.status === 'not_found') handleJoinDenied();
+      } catch { /* transient, keep polling */ }
+    }, 4000);
+  }
+  function stopJoinPolling() {
+    if (joinPollTimer) clearInterval(joinPollTimer);
+    joinPollTimer = null;
+  }
+
+  function handleJoinApproved(data) {
+    stopJoinPolling();
+    state.circleId = pending.circleId;
+    state.deviceId = pending.deviceId;
+    state.circleName = data.circleName;
+    state.memberName = data.members?.find((m) => m.deviceId === state.deviceId)?.name || state.memberName;
+    persist();
+    clearPending();
+    roster = data.members || [];
+    goHome();
+    toast("You're in — welcome!");
+  }
+
+  function handleJoinDenied() {
+    stopJoinPolling();
+    clearPending();
+    showView('onboarding');
+    showOnboardingError('Your join request was declined by the circle owner.');
+  }
 
   function showOnboardingError(msg) {
     const el = $('onboarding-error');
@@ -246,8 +357,84 @@
     $('home-circle-code').textContent = state.circleId;
     renderRoster();
     showView('home');
-    refreshRoster();
+    refreshRoster().then(refreshPending);
     requestNotificationPermission();
+  }
+
+  async function refreshPending() {
+    if (!isOwner()) {
+      pendingRequests = [];
+      renderPending();
+      return;
+    }
+    try {
+      const data = await api(`/api/circles/${state.circleId}/pending?deviceId=${encodeURIComponent(state.deviceId)}`);
+      pendingRequests = data.pending;
+      renderPending();
+    } catch { /* offline, ignore */ }
+  }
+
+  function renderPending() {
+    const section = $('home-pending-section');
+    const el = $('home-pending-list');
+    if (!pendingRequests.length) {
+      section.classList.add('hidden');
+      return;
+    }
+    section.classList.remove('hidden');
+    el.innerHTML = '';
+    for (const r of pendingRequests) {
+      const row = document.createElement('div');
+      row.className = 'member-row';
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar';
+      avatar.textContent = initials(r.name);
+      row.appendChild(avatar);
+      const info = document.createElement('div');
+      info.className = 'member-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'member-name';
+      nameEl.textContent = r.name;
+      info.appendChild(nameEl);
+      row.appendChild(info);
+
+      const actions = document.createElement('div');
+      actions.className = 'member-actions';
+      const approveBtn = document.createElement('button');
+      approveBtn.className = 'icon-btn';
+      approveBtn.title = `Approve ${r.name}`;
+      approveBtn.innerHTML = '<svg><use href="#icon-check-circle"/></svg>';
+      approveBtn.addEventListener('click', () => approveRequest(r));
+      actions.appendChild(approveBtn);
+      const denyBtn = document.createElement('button');
+      denyBtn.className = 'icon-btn danger';
+      denyBtn.title = `Deny ${r.name}`;
+      denyBtn.innerHTML = '<svg><use href="#icon-x-circle"/></svg>';
+      denyBtn.addEventListener('click', () => denyRequest(r));
+      actions.appendChild(denyBtn);
+      row.appendChild(actions);
+
+      el.appendChild(row);
+    }
+  }
+
+  async function approveRequest(r) {
+    try {
+      await api(`/api/circles/${state.circleId}/approve`, { method: 'POST', body: { deviceId: state.deviceId, requestDeviceId: r.deviceId } });
+      refreshPending();
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  async function denyRequest(r) {
+    if (!confirm(`Deny ${r.name}'s request to join?`)) return;
+    try {
+      await api(`/api/circles/${state.circleId}/deny`, { method: 'POST', body: { deviceId: state.deviceId, requestDeviceId: r.deviceId } });
+      refreshPending();
+    } catch (e) {
+      toast(e.message);
+    }
   }
 
   async function refreshRoster() {
@@ -467,12 +654,14 @@
     if (verified) {
       const names = confirmations.map((c) => c.name).join(' & ');
       setIcon('verify-result-icon', 'check-circle');
-      $('verify-result-title').textContent = `Verified: ${names} actively confirmed this call`;
-      $('verify-result-sub').textContent = 'Both devices confirmed the same code within the time window.';
+      $('verify-result-status').textContent = 'Verified';
+      $('verify-result-title').textContent = `${names} actively confirmed this call`;
+      $('verify-result-sub').textContent = 'Both enrolled devices confirmed the same code within the time window.';
     } else {
       setIcon('verify-result-icon', 'x-circle');
-      $('verify-result-title').textContent = 'Not verified';
-      $('verify-result-sub').textContent = "The code expired before both people confirmed. Try again, or don't trust this call.";
+      $('verify-result-status').textContent = 'Not Verified';
+      $('verify-result-title').textContent = "The code expired before both people confirmed";
+      $('verify-result-sub').textContent = "Try again, or don't trust this call.";
     }
     showView('verify-result');
   }
@@ -521,18 +710,21 @@
     if (answer === 'yes') {
       box.className = 'result-box green';
       setIcon('money-result-icon', 'check-circle');
-      $('money-result-title').textContent = `Verified: ${byName} confirms this money request is real`;
+      $('money-result-status').textContent = 'Verified';
+      $('money-result-title').textContent = `${byName} confirms this money request is real`;
       $('money-result-sub').textContent = 'You can proceed, using your own judgment.';
     } else if (answer === 'no') {
       box.className = 'result-box red';
       setIcon('money-result-icon', 'x-circle');
-      $('money-result-title').textContent = 'IDENTITY NOT VERIFIED';
-      $('money-result-sub').textContent = `${byName} says they are NOT asking you for money. DO NOT SEND MONEY. This call may be a scam.`;
+      $('money-result-status').textContent = 'Not Verified';
+      $('money-result-title').textContent = 'DO NOT SEND MONEY';
+      $('money-result-sub').textContent = `${byName} says they are NOT asking you for money. This call may be a scam.`;
     } else {
       box.className = 'result-box amber';
       setIcon('money-result-icon', 'alert-triangle');
-      $('money-result-title').textContent = 'No response';
-      $('money-result-sub').textContent = `${byName} did not respond in time. Could not verify — do not send money without confirming another way.`;
+      $('money-result-status').textContent = 'No Response';
+      $('money-result-title').textContent = 'Could not verify';
+      $('money-result-sub').textContent = `${byName} did not respond in time. Do not send money without confirming another way.`;
     }
     showView('money-result');
   }
@@ -564,6 +756,11 @@
   if (state.circleId && state.deviceId) {
     connectWs();
     goHome();
+  } else if (pending.circleId && pending.deviceId) {
+    connectWs(pending.deviceId);
+    $('join-waiting-circle-name').textContent = pending.circleName;
+    showView('join-waiting');
+    startJoinPolling();
   } else {
     showView('onboarding');
   }

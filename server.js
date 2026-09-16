@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const webpush = require('web-push');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -25,7 +26,33 @@ function saveData() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
 }
 
-const db = loadData(); // { circles: { [circleId]: { name, ownerId, members: { [deviceId]: {name, joinedAt} } } } }
+const db = loadData(); // { circles: { [circleId]: { name, ownerId, members: {...}, pendingRequests: {...} } } }
+
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+const PUSH_ENABLED = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+if (PUSH_ENABLED) {
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:noreply@familyverify.app', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+} else {
+  console.warn('VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY not set — push notifications disabled (in-app + WebSocket alerts still work).');
+}
+
+async function sendPush(circleId, deviceId, payload) {
+  if (!PUSH_ENABLED) return;
+  const circle = db.circles[circleId];
+  const sub = circle?.members[deviceId]?.pushSubscription;
+  if (!sub) return;
+  try {
+    await webpush.sendNotification(sub, JSON.stringify(payload));
+  } catch (err) {
+    if (err.statusCode === 404 || err.statusCode === 410) {
+      delete circle.members[deviceId].pushSubscription;
+      saveData();
+    } else {
+      console.error('push send failed', err.statusCode, err.message);
+    }
+  }
+}
 
 // Runtime-only state (not persisted to disk)
 const sockets = new Map(); // deviceId -> Set<ws>
@@ -114,6 +141,23 @@ function requireOwner(circleId, deviceId) {
   return circle;
 }
 
+// ---------- Push notifications ----------
+
+app.get('/api/push/vapid-public-key', (req, res) => {
+  res.json({ publicKey: PUSH_ENABLED ? VAPID_PUBLIC_KEY : null });
+});
+
+app.post('/api/circles/:circleId/push-subscribe', (req, res) => {
+  const { circleId } = req.params;
+  const { deviceId, subscription } = req.body || {};
+  const circle = requireMember(circleId, deviceId);
+  if (!circle) return res.status(404).json({ error: 'not found' });
+  if (!subscription || !subscription.endpoint) return res.status(400).json({ error: 'invalid subscription' });
+  circle.members[deviceId].pushSubscription = subscription;
+  saveData();
+  res.json({ ok: true });
+});
+
 // ---------- Circle management ----------
 
 app.get('/api/circles/:circleId/available', (req, res) => {
@@ -142,22 +186,90 @@ app.post('/api/circles', (req, res) => {
     name: String(circleName).slice(0, 60),
     ownerId: deviceId,
     members: { [deviceId]: { name: String(memberName).slice(0, 40), joinedAt: Date.now() } },
+    pendingRequests: {},
   };
   saveData();
   res.json({ circleId, deviceId, circleName: db.circles[circleId].name, ownerId: deviceId, members: circleMembers(circleId) });
 });
 
+// Joining requires owner approval — this creates a pending request, not membership.
 app.post('/api/circles/:circleId/join', (req, res) => {
   const { circleId } = req.params;
   const { memberName } = req.body || {};
   const circle = db.circles[circleId];
   if (!circle) return res.status(404).json({ error: 'Circle not found. Check the code.' });
   if (!memberName) return res.status(400).json({ error: 'memberName required' });
+  if (!circle.pendingRequests) circle.pendingRequests = {};
+
   const deviceId = genId();
-  circle.members[deviceId] = { name: String(memberName).slice(0, 40), joinedAt: Date.now() };
+  const name = String(memberName).slice(0, 40);
+  circle.pendingRequests[deviceId] = { name, requestedAt: Date.now() };
   saveData();
+
+  sendToDevice(circle.ownerId, { type: 'join_requested', circleId, deviceId, name });
+  sendPush(circleId, circle.ownerId, {
+    title: 'New join request',
+    body: `${name} wants to join ${circle.name}`,
+    tag: `join-${deviceId}`,
+  });
+  res.json({ circleId, deviceId, circleName: circle.name, status: 'pending' });
+});
+
+app.get('/api/circles/:circleId/join-status/:deviceId', (req, res) => {
+  const { circleId, deviceId } = req.params;
+  const circle = db.circles[circleId];
+  if (!circle) return res.json({ status: 'not_found' });
+  if (circle.members[deviceId]) {
+    return res.json({ status: 'approved', circleName: circle.name, ownerId: circle.ownerId, members: circleMembers(circleId) });
+  }
+  if (circle.pendingRequests && circle.pendingRequests[deviceId]) return res.json({ status: 'pending' });
+  res.json({ status: 'denied' });
+});
+
+app.get('/api/circles/:circleId/pending', (req, res) => {
+  const { circleId } = req.params;
+  const circle = requireOwner(circleId, req.query.deviceId);
+  if (!circle) return res.status(403).json({ error: 'Only the circle owner can view join requests' });
+  const pending = Object.entries(circle.pendingRequests || {})
+    .sort((a, b) => a[1].requestedAt - b[1].requestedAt)
+    .map(([id, r]) => ({ deviceId: id, name: r.name, requestedAt: r.requestedAt }));
+  res.json({ pending });
+});
+
+app.post('/api/circles/:circleId/approve', (req, res) => {
+  const { circleId } = req.params;
+  const { deviceId, requestDeviceId } = req.body || {};
+  const circle = requireOwner(circleId, deviceId);
+  if (!circle) return res.status(403).json({ error: 'Only the circle owner can approve requests' });
+  const reqEntry = circle.pendingRequests && circle.pendingRequests[requestDeviceId];
+  if (!reqEntry) return res.status(404).json({ error: 'Request not found — it may have been withdrawn' });
+
+  delete circle.pendingRequests[requestDeviceId];
+  circle.members[requestDeviceId] = { name: reqEntry.name, joinedAt: Date.now() };
+  saveData();
+
   broadcastToCircle(circleId, { type: 'roster_update', members: circleMembers(circleId), ownerId: circle.ownerId });
-  res.json({ circleId, deviceId, circleName: circle.name, ownerId: circle.ownerId, members: circleMembers(circleId) });
+  sendToDevice(requestDeviceId, {
+    type: 'join_approved',
+    circleId,
+    circleName: circle.name,
+    ownerId: circle.ownerId,
+    members: circleMembers(circleId),
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/circles/:circleId/deny', (req, res) => {
+  const { circleId } = req.params;
+  const { deviceId, requestDeviceId } = req.body || {};
+  const circle = requireOwner(circleId, deviceId);
+  if (!circle) return res.status(403).json({ error: 'Only the circle owner can deny requests' });
+  if (!circle.pendingRequests || !circle.pendingRequests[requestDeviceId]) return res.status(404).json({ error: 'not found' });
+
+  delete circle.pendingRequests[requestDeviceId];
+  saveData();
+  sendToDevice(requestDeviceId, { type: 'join_denied', circleId });
+  res.json({ ok: true });
 });
 
 app.get('/api/circles/:circleId', (req, res) => {
@@ -241,17 +353,24 @@ app.post('/api/circles/:circleId/verify', (req, res) => {
   sessions.set(sessionId, session);
   setTimeout(() => expireSession(sessionId), SESSION_TTL_MS);
 
+  const initiatorName = circle.members[deviceId].name;
+  const targetName = circle.members[targetDeviceId].name;
   sendToDevices(participants, {
     type: 'verify_start',
     sessionId,
     challenge,
-    initiatorName: circle.members[deviceId].name,
+    initiatorName,
     initiatorDeviceId: deviceId,
-    targetName: circle.members[targetDeviceId].name,
+    targetName,
     ttlMs: SESSION_TTL_MS,
     confirmWindowMs: CONFIRM_WINDOW_MS,
   });
-  res.json({ sessionId, challenge, targetName: circle.members[targetDeviceId].name, ttlMs: SESSION_TTL_MS, confirmWindowMs: CONFIRM_WINDOW_MS });
+  sendPush(circleId, targetDeviceId, {
+    title: 'Verify this call?',
+    body: `${initiatorName} wants to verify a call with you.`,
+    tag: `verify-${sessionId}`,
+  });
+  res.json({ sessionId, challenge, targetName, ttlMs: SESSION_TTL_MS, confirmWindowMs: CONFIRM_WINDOW_MS });
 });
 
 function expireSession(sessionId) {
@@ -298,14 +417,20 @@ app.post('/api/circles/:circleId/money-request', (req, res) => {
   if (!circle || !circle.members[targetDeviceId]) return res.status(404).json({ error: 'not found' });
 
   const requestId = genId(6);
+  const fromName = circle.members[deviceId].name;
   moneyRequests.set(requestId, { circleId, fromDeviceId: deviceId, targetDeviceId, createdAt: Date.now(), status: 'pending' });
   setTimeout(() => timeoutMoneyRequest(requestId), MONEY_TIMEOUT_MS);
 
   sendToDevice(targetDeviceId, {
     type: 'money_check',
     requestId,
-    fromName: circle.members[deviceId].name,
+    fromName,
     timeoutMs: MONEY_TIMEOUT_MS,
+  });
+  sendPush(circleId, targetDeviceId, {
+    title: 'Money request check',
+    body: `${fromName} wants to confirm: are you asking them for money?`,
+    tag: `money-${requestId}`,
   });
   res.json({ requestId, timeoutMs: MONEY_TIMEOUT_MS });
 });
@@ -315,11 +440,12 @@ function timeoutMoneyRequest(requestId) {
   if (!r || r.status !== 'pending') return;
   r.status = 'timeout';
   const circle = db.circles[r.circleId];
-  sendToDevice(r.fromDeviceId, {
-    type: 'money_result',
-    requestId,
-    answer: 'timeout',
-    byName: circle?.members[r.targetDeviceId]?.name || 'them',
+  const byName = circle?.members[r.targetDeviceId]?.name || 'them';
+  sendToDevice(r.fromDeviceId, { type: 'money_result', requestId, answer: 'timeout', byName });
+  sendPush(r.circleId, r.fromDeviceId, {
+    title: 'No response',
+    body: `${byName} did not respond in time. Do not send money without confirming another way.`,
+    tag: `money-result-${requestId}`,
   });
 }
 
@@ -332,11 +458,14 @@ app.post('/api/circles/:circleId/money-request/:requestId/respond', (req, res) =
 
   if (r.status === 'pending') {
     r.status = answer === 'yes' ? 'yes' : 'no';
-    sendToDevice(r.fromDeviceId, {
-      type: 'money_result',
-      requestId,
-      answer: r.status,
-      byName: circle.members[deviceId].name,
+    const byName = circle.members[deviceId].name;
+    sendToDevice(r.fromDeviceId, { type: 'money_result', requestId, answer: r.status, byName });
+    sendPush(circleId, r.fromDeviceId, {
+      title: r.status === 'no' ? 'Do not send money' : 'Money request confirmed',
+      body: r.status === 'no'
+        ? `${byName} says they are NOT asking you for money. This call may be a scam.`
+        : `${byName} confirms this money request is real.`,
+      tag: `money-result-${requestId}`,
     });
   }
   res.json({ ok: true });

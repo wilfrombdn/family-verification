@@ -176,6 +176,7 @@ input::placeholder { color: #94a3b8; }
   overflow: hidden;
   box-shadow: var(--shadow);
 }
+.member-list.pending { border-color: var(--amber-border); background: var(--amber-tint); }
 .member-row {
   display: flex;
   align-items: center;
@@ -254,8 +255,18 @@ input::placeholder { color: #94a3b8; }
 .result-box.green .result-icon { color: var(--green); }
 .result-box.red .result-icon { color: var(--danger); }
 .result-box.amber .result-icon { color: var(--amber); }
-.result-title { font-size: 21px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.01em; }
-.result-sub { color: var(--muted); font-size: 15px; line-height: 1.4; }
+.result-status {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+.result-box.green .result-status { color: var(--green); }
+.result-box.red .result-status { color: var(--danger); }
+.result-box.amber .result-status { color: var(--amber); }
+.result-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; line-height: 1.35; }
+.result-sub { color: var(--muted); font-size: 14px; line-height: 1.4; }
 
 .spinner {
   width: 36px; height: 36px;
