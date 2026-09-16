@@ -1,0 +1,16 @@
+{
+  "name": "family-verification",
+  "version": "1.0.0",
+  "description": "Real-time mutual call verification for families, to defeat caller-ID spoofing and voice-clone scams.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
