@@ -5,61 +5,124 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Family Verify</title>
 <link rel="manifest" href="/app/manifest.json">
-<meta name="theme-color" content="#1f2937">
+<meta name="theme-color" content="#f8fafc">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="FamVerify">
 <link rel="apple-touch-icon" href="/app/icon.png">
 <link rel="stylesheet" href="/app/style.css">
 </head>
 <body>
 
+<svg style="display:none" aria-hidden="true">
+  <symbol id="icon-shield-check" viewBox="0 0 24 24" fill="none">
+    <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="icon-alert-circle" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M12 7.5v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <circle cx="12" cy="16.5" r="1" fill="currentColor"/>
+  </symbol>
+  <symbol id="icon-check-circle" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="icon-x-circle" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="icon-alert-triangle" viewBox="0 0 24 24" fill="none">
+    <path d="M12 4l9.5 16H2.5L12 4z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M12 10v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <circle cx="12" cy="17" r="1" fill="currentColor"/>
+  </symbol>
+  <symbol id="icon-crown" viewBox="0 0 24 24" fill="none">
+    <path d="M4 18h16l1.2-9-5.2 3.5L12 6l-4 6.5L2.8 9 4 18z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="icon-user-x" viewBox="0 0 24 24" fill="none">
+    <circle cx="10" cy="8" r="3.2" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M3.5 19c.8-3.4 3.4-5.3 6.5-5.3s5.7 1.9 6.5 5.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M17 8.5l4 4M21 8.5l-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="icon-log-out" viewBox="0 0 24 24" fill="none">
+    <path d="M9 4H5.5A1.5 1.5 0 004 5.5v13A1.5 1.5 0 005.5 20H9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M15 16l4-4-4-4M19 12H9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+</svg>
+
 <div id="toast" class="toast hidden"></div>
 
 <!-- ONBOARDING -->
 <section id="view-onboarding" class="view">
-  <h1>Family Verify</h1>
-  <p class="sub">Prove a phone call is really them &mdash; before anyone sends money.</p>
+  <div class="brand-header">
+    <img src="/app/icon.svg" class="brand-logo" alt="">
+    <div>
+      <h1>Family Verify</h1>
+      <p class="sub">Prove a phone call is really them &mdash; before anyone sends money.</p>
+    </div>
+  </div>
 
-  <div class="card">
-    <h2>Start a new Family Circle</h2>
-    <input id="create-circle-name" placeholder="Circle name (e.g. The Phillips Family)" maxlength="60">
+  <div class="tabs">
+    <button class="tab active" id="tab-create" type="button">Create Circle</button>
+    <button class="tab" id="tab-join" type="button">Join Circle</button>
+  </div>
+
+  <div class="panel" id="panel-create">
+    <label class="field-label" for="create-circle-name">Circle name</label>
+    <input id="create-circle-name" placeholder="e.g. The Phillips Family" maxlength="60">
+    <label class="field-label" for="create-your-name">Your name</label>
     <input id="create-your-name" placeholder="Your name" maxlength="40">
+    <label class="field-label" for="create-circle-code">Custom code <span class="optional">(optional)</span></label>
+    <input id="create-circle-code" placeholder="Leave blank to auto-generate" maxlength="24" style="text-transform:uppercase">
+    <p class="field-status" id="code-status"></p>
     <button class="btn primary" id="btn-create-circle">Create Circle</button>
   </div>
 
-  <div class="card">
-    <h2>Join a Family Circle</h2>
-    <input id="join-code" placeholder="Circle code (e.g. AB3CQ9)" maxlength="6" style="text-transform:uppercase">
+  <div class="panel hidden" id="panel-join">
+    <label class="field-label" for="join-code">Circle code</label>
+    <input id="join-code" placeholder="e.g. AB3CQ9" maxlength="24" style="text-transform:uppercase">
+    <label class="field-label" for="join-your-name">Your name</label>
     <input id="join-your-name" placeholder="Your name" maxlength="40">
-    <button class="btn" id="btn-join-circle">Join Circle</button>
+    <button class="btn primary" id="btn-join-circle">Join Circle</button>
   </div>
+
   <p id="onboarding-error" class="error hidden"></p>
 </section>
 
 <!-- HOME -->
 <section id="view-home" class="view hidden">
-  <div class="topbar">
+  <div class="appbar">
     <div>
       <div class="circle-name" id="home-circle-name"></div>
-      <div class="circle-code">Circle code: <b id="home-circle-code"></b></div>
+      <div class="circle-code">Code: <b id="home-circle-code"></b></div>
     </div>
-    <button class="btn small ghost" id="btn-leave">Leave</button>
+    <button class="icon-btn" id="btn-leave" title="Leave circle"><svg><use href="#icon-log-out"/></svg></button>
   </div>
 
-  <div class="roster" id="home-roster"></div>
+  <div class="member-list" id="home-roster"></div>
 
-  <button class="btn huge primary" id="btn-start-verify">✅ Verify This Call</button>
-  <p class="hint">Both people tap this during the call and confirm the same code within 10 seconds.</p>
+  <div class="action-stack">
+    <button class="btn huge primary" id="btn-start-verify"><svg class="btn-icon"><use href="#icon-shield-check"/></svg>Verify This Call</button>
+    <p class="hint">Both people tap this during the call and confirm the same code within 10 seconds.</p>
 
-  <button class="btn huge danger" id="btn-request-money">💰 They're Requesting Money</button>
-  <p class="hint">Use this if the caller is asking you (or claiming to be someone) who wants money sent.</p>
+    <button class="btn huge danger" id="btn-request-money"><svg class="btn-icon"><use href="#icon-alert-circle"/></svg>They're Requesting Money</button>
+    <p class="hint">Use this if the caller is asking you (or claiming to be someone) who wants money sent.</p>
+  </div>
+</section>
+
+<!-- VERIFY: pick who you're on the call with -->
+<section id="view-verify-picker" class="view hidden">
+  <h2>Who are you on the call with?</h2>
+  <p class="hint">We'll send the verification code straight to their device.</p>
+  <div class="member-list picker" id="verify-picker-list"></div>
+  <button class="btn ghost" id="btn-verify-picker-cancel">Cancel</button>
 </section>
 
 <!-- VERIFY: waiting for connection -->
 <section id="view-verify-active" class="view hidden">
   <div class="challenge-box">
-    <div class="challenge-label">Say this code out loud, then both tap Confirm:</div>
+    <div class="challenge-label" id="verify-with-label">Say this code out loud, then both tap Confirm:</div>
     <div class="challenge-code" id="verify-challenge">— — —</div>
     <div class="countdown" id="verify-countdown"></div>
   </div>
@@ -82,7 +145,7 @@
 <section id="view-money-picker" class="view hidden">
   <h2>Who does the caller claim to be?</h2>
   <p class="hint">We'll ask that person right now whether they're really asking you for money.</p>
-  <div class="roster picker" id="money-picker-list"></div>
+  <div class="member-list picker" id="money-picker-list"></div>
   <button class="btn ghost" id="btn-money-picker-cancel">Cancel</button>
 </section>
 
@@ -98,7 +161,7 @@
 <!-- MONEY: incoming check (the other family member answers YES/NO) -->
 <section id="view-money-incoming" class="view hidden">
   <div class="result-box amber">
-    <div class="result-icon">⚠️</div>
+    <div class="result-icon"><svg><use href="#icon-alert-triangle"/></svg></div>
     <div class="result-title"><span id="money-incoming-name"></span> is trying to verify a financial request.</div>
     <div class="result-sub">Are you currently asking them for money?</div>
   </div>

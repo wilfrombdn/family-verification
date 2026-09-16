@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Family Verify</title>
-<meta name="theme-color" content="#1f2937">
+<meta name="theme-color" content="#f8fafc">
 <link rel="apple-touch-icon" href="/app/icon.png">
 <link rel="icon" href="/app/icon.svg">
 <link rel="stylesheet" href="/landing.css">
@@ -12,31 +12,48 @@
 <body>
 
 <main>
-  <h1>Family Verify</h1>
-  <p class="sub">Prove a phone call is really them &mdash; before anyone sends money.</p>
-
-  <a class="btn primary huge" href="/app/">Open the App (Web)</a>
-  <p class="hint">Works in any browser, right now, on any device. No install needed.</p>
-
-  <div class="card" id="android-card">
-    <h2>📱 Android</h2>
-    <p>Install a real app icon on your home screen.</p>
-    <a class="btn" href="/downloads/FamilyVerify.apk" download>Download for Android (.apk)</a>
-    <p class="hint">Your phone will warn about "unknown sources" since this isn't from the Play Store &mdash; that's expected, tap Install anyway.</p>
+  <div class="brand">
+    <img src="/app/icon.svg" alt="" class="logo">
+    <span class="brand-name">Family Verify</span>
   </div>
 
-  <div class="card" id="ios-card">
-    <h2>🍎 iPhone / iPad</h2>
-    <p>Apple doesn't allow installing apps outside the App Store without a developer account, so instead you add the app to your home screen from Safari &mdash; it behaves just like an installed app, full screen, no browser bar.</p>
-    <a class="btn" href="/app/" id="ios-open-link">Open in Safari</a>
-    <ol class="steps">
-      <li>Tap the <b>Share</b> icon (square with an arrow) at the bottom of Safari</li>
-      <li>Scroll down and tap <b>Add to Home Screen</b></li>
-      <li>Tap <b>Add</b> &mdash; the app icon now lives on your home screen</li>
-    </ol>
-  </div>
+  <h1>Know it's really them.</h1>
+  <p class="sub">A live, mutual check that proves a phone call is genuine &mdash; before anyone sends money.</p>
 
-  <p class="footnote">Both the Android app and the home-screen version always show whatever is currently live on this site &mdash; nothing to redownload when the app is updated.</p>
+  <a class="btn primary huge" href="/app/">Open the App</a>
+  <p class="hint center">Works instantly in any browser. No install required.</p>
+
+  <div class="divider"><span>Install on your phone</span></div>
+
+  <div class="platform-row" id="android-row">
+    <div class="platform-icon android">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M6 9v6M18 9v6M8 8h8v9a1 1 0 01-1 1H9a1 1 0 01-1-1V8zM8 8a4 4 0 118 0M9.5 4.5L8 3M14.5 4.5L16 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="platform-text">
+      <div class="platform-title">Android</div>
+      <div class="platform-desc">Installs as a real app icon</div>
+    </div>
+    <a class="btn platform-btn" href="/downloads/FamilyVerify.apk" download>Download</a>
+  </div>
+  <p class="hint">Your phone will warn about "unknown sources" since this isn't from the Play Store &mdash; that's expected, tap Install anyway.</p>
+
+  <div class="platform-row" id="ios-row">
+    <div class="platform-icon ios">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.365 1.43c0 1.14-.462 2.23-1.222 3.04-.83.87-2.15 1.55-3.24 1.46-.14-1.11.44-2.28 1.2-3.05.83-.85 2.28-1.5 3.26-1.45zM20.9 17.5c-.6 1.38-.9 2-1.64 3.2-1 1.7-2.42 3.83-4.18 3.85-1.55.02-1.95-1.02-4.05-1.01-2.1.01-2.55 1.03-4.1 1.01-1.76-.02-3.1-1.93-4.1-3.63C.6 17.9-.5 13.6 1.05 10.73c.83-1.5 2.3-2.45 3.9-2.47 1.6-.03 2.6 1.08 4 1.08 1.35 0 2.15-1.08 4.05-1.08 1.24.02 2.9.6 3.98 2.05-3.5 1.92-2.93 6.88.9 7.35 0 .01-.6.1-.98.84z"/></svg>
+    </div>
+    <div class="platform-text">
+      <div class="platform-title">iPhone &amp; iPad</div>
+      <div class="platform-desc">Add to Home Screen from Safari</div>
+    </div>
+    <a class="btn platform-btn" href="/app/">Open</a>
+  </div>
+  <ol class="steps">
+    <li>Tap the <b>Share</b> icon in Safari</li>
+    <li>Scroll down, tap <b>Add to Home Screen</b></li>
+    <li>Tap <b>Add</b> &mdash; it now lives on your home screen</li>
+  </ol>
+
+  <p class="footnote">The Android app and the iOS home-screen version both always show whatever is currently live on this site &mdash; nothing to redownload when the app is updated.</p>
 </main>
 
 <script src="/landing.js"></script>

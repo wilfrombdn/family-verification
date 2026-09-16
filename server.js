@@ -25,7 +25,7 @@ function saveData() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
 }
 
-const db = loadData(); // { circles: { [circleId]: { name, members: { [deviceId]: {name} } } } }
+const db = loadData(); // { circles: { [circleId]: { name, ownerId, members: { [deviceId]: {name, joinedAt} } } } }
 
 // Runtime-only state (not persisted to disk)
 const sockets = new Map(); // deviceId -> Set<ws>
@@ -41,9 +41,16 @@ function genId(len = 8) {
 }
 function genCircleCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I ambiguity
-  let s = '';
-  for (let i = 0; i < 6; i++) s += chars[crypto.randomInt(chars.length)];
-  return s;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    let s = '';
+    for (let i = 0; i < 6; i++) s += chars[crypto.randomInt(chars.length)];
+    if (!db.circles[s]) return s;
+  }
+  throw new Error('could not generate a unique circle code');
+}
+const CODE_PATTERN = /^[A-Z0-9][A-Z0-9_-]{2,23}$/;
+function normalizeCode(code) {
+  return String(code || '').trim().toUpperCase();
 }
 const WORDS_A = ['BLUE', 'RED', 'GOLD', 'SILVER', 'GREEN', 'SCARLET', 'VIOLET', 'AMBER', 'CORAL', 'JADE'];
 const WORDS_B = ['TIGER', 'FALCON', 'OTTER', 'RAVEN', 'COMET', 'MAPLE', 'HARBOR', 'CANYON', 'WILLOW', 'GRANITE'];
@@ -57,7 +64,9 @@ function genChallenge() {
 function circleMembers(circleId) {
   const c = db.circles[circleId];
   if (!c) return [];
-  return Object.entries(c.members).map(([deviceId, m]) => ({ deviceId, name: m.name }));
+  return Object.entries(c.members)
+    .sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0))
+    .map(([deviceId, m]) => ({ deviceId, name: m.name, isOwner: deviceId === c.ownerId }));
 }
 
 function sendToDevice(deviceId, msg) {
@@ -70,6 +79,9 @@ function sendToDevice(deviceId, msg) {
 }
 function broadcastToCircle(circleId, msg) {
   for (const m of circleMembers(circleId)) sendToDevice(m.deviceId, msg);
+}
+function sendToDevices(deviceIds, msg) {
+  for (const id of deviceIds) sendToDevice(id, msg);
 }
 
 wss.on('connection', (ws) => {
@@ -96,17 +108,43 @@ function requireMember(circleId, deviceId) {
   if (!circle || !circle.members[deviceId]) return null;
   return circle;
 }
+function requireOwner(circleId, deviceId) {
+  const circle = requireMember(circleId, deviceId);
+  if (!circle || circle.ownerId !== deviceId) return null;
+  return circle;
+}
 
 // ---------- Circle management ----------
 
+app.get('/api/circles/:circleId/available', (req, res) => {
+  const code = normalizeCode(req.params.circleId);
+  if (!CODE_PATTERN.test(code)) return res.json({ available: false, reason: 'invalid' });
+  res.json({ available: !db.circles[code] });
+});
+
 app.post('/api/circles', (req, res) => {
-  const { circleName, memberName } = req.body || {};
+  const { circleName, memberName, circleCode } = req.body || {};
   if (!circleName || !memberName) return res.status(400).json({ error: 'circleName and memberName required' });
-  const circleId = genCircleCode();
+
+  let circleId;
+  if (circleCode) {
+    circleId = normalizeCode(circleCode);
+    if (!CODE_PATTERN.test(circleId)) {
+      return res.status(400).json({ error: 'Circle code must be 3-24 letters, numbers, - or _' });
+    }
+    if (db.circles[circleId]) return res.status(409).json({ error: 'That circle code is already taken' });
+  } else {
+    circleId = genCircleCode();
+  }
+
   const deviceId = genId();
-  db.circles[circleId] = { name: String(circleName).slice(0, 60), members: { [deviceId]: { name: String(memberName).slice(0, 40) } } };
+  db.circles[circleId] = {
+    name: String(circleName).slice(0, 60),
+    ownerId: deviceId,
+    members: { [deviceId]: { name: String(memberName).slice(0, 40), joinedAt: Date.now() } },
+  };
   saveData();
-  res.json({ circleId, deviceId, circleName: db.circles[circleId].name, members: circleMembers(circleId) });
+  res.json({ circleId, deviceId, circleName: db.circles[circleId].name, ownerId: deviceId, members: circleMembers(circleId) });
 });
 
 app.post('/api/circles/:circleId/join', (req, res) => {
@@ -116,31 +154,85 @@ app.post('/api/circles/:circleId/join', (req, res) => {
   if (!circle) return res.status(404).json({ error: 'Circle not found. Check the code.' });
   if (!memberName) return res.status(400).json({ error: 'memberName required' });
   const deviceId = genId();
-  circle.members[deviceId] = { name: String(memberName).slice(0, 40) };
+  circle.members[deviceId] = { name: String(memberName).slice(0, 40), joinedAt: Date.now() };
   saveData();
-  broadcastToCircle(circleId, { type: 'roster_update', members: circleMembers(circleId) });
-  res.json({ circleId, deviceId, circleName: circle.name, members: circleMembers(circleId) });
+  broadcastToCircle(circleId, { type: 'roster_update', members: circleMembers(circleId), ownerId: circle.ownerId });
+  res.json({ circleId, deviceId, circleName: circle.name, ownerId: circle.ownerId, members: circleMembers(circleId) });
 });
 
 app.get('/api/circles/:circleId', (req, res) => {
   const circle = db.circles[req.params.circleId];
   if (!circle) return res.status(404).json({ error: 'not found' });
-  res.json({ circleId: req.params.circleId, circleName: circle.name, members: circleMembers(req.params.circleId) });
+  res.json({ circleId: req.params.circleId, circleName: circle.name, ownerId: circle.ownerId, members: circleMembers(req.params.circleId) });
+});
+
+app.post('/api/circles/:circleId/leave', (req, res) => {
+  const { circleId } = req.params;
+  const { deviceId } = req.body || {};
+  const circle = requireMember(circleId, deviceId);
+  if (!circle) return res.status(404).json({ error: 'not found' });
+
+  delete circle.members[deviceId];
+  const remaining = Object.keys(circle.members);
+  if (remaining.length === 0) {
+    delete db.circles[circleId];
+    saveData();
+    return res.json({ ok: true });
+  }
+  if (circle.ownerId === deviceId) {
+    // Hand leadership to whoever joined earliest among those remaining.
+    circle.ownerId = circleMembers(circleId)[0]?.deviceId || remaining[0];
+  }
+  saveData();
+  broadcastToCircle(circleId, { type: 'roster_update', members: circleMembers(circleId), ownerId: circle.ownerId });
+  res.json({ ok: true });
+});
+
+app.post('/api/circles/:circleId/kick', (req, res) => {
+  const { circleId } = req.params;
+  const { deviceId, targetDeviceId } = req.body || {};
+  const circle = requireOwner(circleId, deviceId);
+  if (!circle) return res.status(403).json({ error: 'Only the circle owner can remove members' });
+  if (!circle.members[targetDeviceId]) return res.status(404).json({ error: 'not found' });
+  if (targetDeviceId === deviceId) return res.status(400).json({ error: "Use Leave to remove yourself" });
+
+  delete circle.members[targetDeviceId];
+  saveData();
+  broadcastToCircle(circleId, { type: 'roster_update', members: circleMembers(circleId), ownerId: circle.ownerId });
+  sendToDevice(targetDeviceId, { type: 'kicked', circleId });
+  res.json({ ok: true });
+});
+
+app.post('/api/circles/:circleId/transfer-owner', (req, res) => {
+  const { circleId } = req.params;
+  const { deviceId, newOwnerDeviceId } = req.body || {};
+  const circle = requireOwner(circleId, deviceId);
+  if (!circle) return res.status(403).json({ error: 'Only the circle owner can transfer leadership' });
+  if (!circle.members[newOwnerDeviceId]) return res.status(404).json({ error: 'not found' });
+
+  circle.ownerId = newOwnerDeviceId;
+  saveData();
+  broadcastToCircle(circleId, { type: 'roster_update', members: circleMembers(circleId), ownerId: circle.ownerId });
+  res.json({ ok: true });
 });
 
 // ---------- "Verify this call" flow ----------
 
 app.post('/api/circles/:circleId/verify', (req, res) => {
   const { circleId } = req.params;
-  const { deviceId } = req.body || {};
+  const { deviceId, targetDeviceId } = req.body || {};
   const circle = requireMember(circleId, deviceId);
   if (!circle) return res.status(404).json({ error: 'not found' });
+  if (!targetDeviceId || !circle.members[targetDeviceId]) return res.status(404).json({ error: 'Pick who you are on the call with' });
+  if (targetDeviceId === deviceId) return res.status(400).json({ error: 'Pick someone else in the circle' });
 
   const sessionId = genId(6);
   const challenge = genChallenge();
+  const participants = [deviceId, targetDeviceId];
   const session = {
     sessionId, circleId, challenge,
     initiatorDeviceId: deviceId,
+    participants,
     createdAt: Date.now(),
     confirmations: [],
     verified: false,
@@ -149,23 +241,24 @@ app.post('/api/circles/:circleId/verify', (req, res) => {
   sessions.set(sessionId, session);
   setTimeout(() => expireSession(sessionId), SESSION_TTL_MS);
 
-  broadcastToCircle(circleId, {
+  sendToDevices(participants, {
     type: 'verify_start',
     sessionId,
     challenge,
     initiatorName: circle.members[deviceId].name,
     initiatorDeviceId: deviceId,
+    targetName: circle.members[targetDeviceId].name,
     ttlMs: SESSION_TTL_MS,
     confirmWindowMs: CONFIRM_WINDOW_MS,
   });
-  res.json({ sessionId, challenge, ttlMs: SESSION_TTL_MS, confirmWindowMs: CONFIRM_WINDOW_MS });
+  res.json({ sessionId, challenge, targetName: circle.members[targetDeviceId].name, ttlMs: SESSION_TTL_MS, confirmWindowMs: CONFIRM_WINDOW_MS });
 });
 
 function expireSession(sessionId) {
   const s = sessions.get(sessionId);
   if (!s || s.verified || s.expired) return;
   s.expired = true;
-  broadcastToCircle(s.circleId, { type: 'verify_update', sessionId: s.sessionId, verified: false, expired: true, confirmations: s.confirmations });
+  sendToDevices(s.participants, { type: 'verify_update', sessionId: s.sessionId, verified: false, expired: true, confirmations: s.confirmations });
 }
 
 app.post('/api/circles/:circleId/verify/:sessionId/confirm', (req, res) => {
@@ -174,6 +267,7 @@ app.post('/api/circles/:circleId/verify/:sessionId/confirm', (req, res) => {
   const circle = requireMember(circleId, deviceId);
   const session = sessions.get(sessionId);
   if (!circle || !session || session.circleId !== circleId) return res.status(404).json({ error: 'not found' });
+  if (!session.participants.includes(deviceId)) return res.status(403).json({ error: 'not part of this verification' });
 
   if (!session.verified && !session.expired) {
     if (!session.confirmations.find((c) => c.deviceId === deviceId)) {
@@ -184,7 +278,7 @@ app.post('/api/circles/:circleId/verify/:sessionId/confirm', (req, res) => {
       const spread = Math.max(...times) - Math.min(...times);
       if (spread <= CONFIRM_WINDOW_MS) session.verified = true;
     }
-    broadcastToCircle(circleId, {
+    sendToDevices(session.participants, {
       type: 'verify_update',
       sessionId,
       verified: session.verified,

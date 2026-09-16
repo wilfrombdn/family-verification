@@ -1,7 +1,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
-  const views = ['onboarding', 'home', 'verify-active', 'verify-result', 'money-picker', 'money-waiting', 'money-incoming', 'money-result'];
+  const views = ['onboarding', 'home', 'verify-picker', 'verify-active', 'verify-result', 'money-picker', 'money-waiting', 'money-incoming', 'money-result'];
   function showView(name) {
     for (const v of views) $(`view-${v}`).classList.toggle('hidden', v !== name);
   }
@@ -16,6 +16,29 @@
 
   function vibrate(pattern) {
     if (navigator.vibrate) navigator.vibrate(pattern);
+  }
+
+  function requestNotificationPermission() {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') Notification.requestPermission();
+  }
+
+  function notifyOS(title, body) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    // Skip if the person is already looking at this tab — the in-app UI is enough then.
+    if (document.visibilityState === 'visible' && document.hasFocus()) return;
+    try {
+      const n = new Notification(title, { body, icon: '/app/icon.png', requireInteraction: true, tag: 'family-verify' });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch { /* some platforms restrict direct Notification() construction; ignore */ }
+  }
+
+  function initials(name) {
+    return (name || '?').trim().slice(0, 1).toUpperCase();
+  }
+
+  function setIcon(elId, iconName) {
+    $(elId).innerHTML = `<svg><use href="#icon-${iconName}"/></svg>`;
   }
 
   // ---------- Persisted identity ----------
@@ -39,11 +62,14 @@
     state = { circleId: null, deviceId: null, circleName: '', memberName: '' };
   }
 
-  let roster = []; // [{deviceId, name}]
-  let pendingMoneyTarget = null;
+  let roster = []; // [{deviceId, name, isOwner}]
   let currentVerifySession = null; // {sessionId, challenge, deadline, confirmWindowMs}
   let currentMoneyRequestId = null;
   let countdownTimer = null;
+
+  function isOwner() {
+    return roster.find((m) => m.deviceId === state.deviceId)?.isOwner === true;
+  }
 
   // ---------- API ----------
   async function api(path, opts) {
@@ -81,18 +107,28 @@
     if (msg.type === 'roster_update') {
       roster = msg.members;
       renderRoster();
+    } else if (msg.type === 'kicked') {
+      if (msg.circleId !== state.circleId) return;
+      if (ws) ws.close();
+      clearIdentity();
+      showView('onboarding');
+      toast('You were removed from this circle.');
     } else if (msg.type === 'verify_start') {
       vibrate([200, 100, 200]);
+      const otherName = msg.initiatorDeviceId === state.deviceId ? msg.targetName : msg.initiatorName;
       currentVerifySession = {
         sessionId: msg.sessionId,
         challenge: msg.challenge,
         startedAt: Date.now(),
         ttlMs: msg.ttlMs,
         confirmWindowMs: msg.confirmWindowMs,
-        initiatorName: msg.initiatorName,
+        otherName,
       };
       renderVerifyActive();
       showView('verify-active');
+      if (msg.initiatorDeviceId !== state.deviceId) {
+        notifyOS('Verify this call?', `${msg.initiatorName} wants to verify a call with you. Open Family Verify to confirm.`);
+      }
     } else if (msg.type === 'verify_update') {
       if (!currentVerifySession || currentVerifySession.sessionId !== msg.sessionId) return;
       renderConfirmList(msg.confirmations);
@@ -108,20 +144,66 @@
       currentMoneyRequestId = msg.requestId;
       $('money-incoming-name').textContent = msg.fromName;
       showView('money-incoming');
+      notifyOS('Money request check', `${msg.fromName} wants to confirm: are you asking them for money?`);
     } else if (msg.type === 'money_result') {
       if (msg.requestId !== currentMoneyRequestId) return;
       showMoneyResult(msg.answer, msg.byName);
+      if (msg.answer === 'no') notifyOS('Do not send money', `${msg.byName} says they are NOT asking you for money.`);
     }
   }
 
-  // ---------- Onboarding ----------
+  // ---------- Onboarding: tabs ----------
+  $('tab-create').addEventListener('click', () => switchTab('create'));
+  $('tab-join').addEventListener('click', () => switchTab('join'));
+  function switchTab(name) {
+    $('tab-create').classList.toggle('active', name === 'create');
+    $('tab-join').classList.toggle('active', name === 'join');
+    $('panel-create').classList.toggle('hidden', name !== 'create');
+    $('panel-join').classList.toggle('hidden', name !== 'join');
+    $('onboarding-error').classList.add('hidden');
+  }
+
+  // ---------- Onboarding: custom code availability ----------
+  let codeCheckTimer = null;
+  $('create-circle-code').addEventListener('input', (e) => {
+    const raw = e.target.value.toUpperCase();
+    e.target.value = raw;
+    const status = $('code-status');
+    clearTimeout(codeCheckTimer);
+    if (!raw) {
+      status.textContent = '';
+      status.className = 'field-status';
+      return;
+    }
+    status.textContent = 'Checking…';
+    status.className = 'field-status';
+    codeCheckTimer = setTimeout(async () => {
+      try {
+        const data = await api(`/api/circles/${encodeURIComponent(raw)}/available`);
+        if (data.available) {
+          status.textContent = `"${raw}" is available`;
+          status.className = 'field-status ok';
+        } else {
+          status.textContent = data.reason === 'invalid'
+            ? 'Use 3-24 letters, numbers, - or _'
+            : `"${raw}" is already taken`;
+          status.className = 'field-status bad';
+        }
+      } catch {
+        status.textContent = '';
+      }
+    }, 400);
+  });
+
+  // ---------- Onboarding: create / join ----------
   $('btn-create-circle').addEventListener('click', async () => {
     const circleName = $('create-circle-name').value.trim();
     const memberName = $('create-your-name').value.trim();
+    const circleCode = $('create-circle-code').value.trim();
     $('onboarding-error').classList.add('hidden');
     if (!circleName || !memberName) return showOnboardingError('Please fill in both fields.');
     try {
-      const data = await api('/api/circles', { method: 'POST', body: { circleName, memberName } });
+      const data = await api('/api/circles', { method: 'POST', body: { circleName, memberName, circleCode: circleCode || undefined } });
       applyIdentity(data);
     } catch (e) {
       showOnboardingError(e.message);
@@ -165,29 +247,129 @@
     renderRoster();
     showView('home');
     refreshRoster();
+    requestNotificationPermission();
   }
 
   async function refreshRoster() {
     try {
       const data = await api(`/api/circles/${state.circleId}`);
       roster = data.members;
+      state.circleName = data.circleName;
+      $('home-circle-name').textContent = state.circleName;
       renderRoster();
     } catch { /* offline, ignore */ }
+  }
+
+  function renderPickerList(elId, members, onPick) {
+    const el = $(elId);
+    el.innerHTML = '';
+    for (const m of members) {
+      const row = document.createElement('div');
+      row.className = 'member-row';
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar';
+      avatar.textContent = initials(m.name);
+      row.appendChild(avatar);
+      const info = document.createElement('div');
+      info.className = 'member-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'member-name';
+      nameEl.textContent = m.name;
+      info.appendChild(nameEl);
+      row.appendChild(info);
+      row.addEventListener('click', () => onPick(m));
+      el.appendChild(row);
+    }
   }
 
   function renderRoster() {
     const el = $('home-roster');
     el.innerHTML = '';
+    const iAmOwner = isOwner();
     for (const m of roster) {
-      const chip = document.createElement('div');
-      chip.className = 'roster-chip';
-      chip.textContent = m.deviceId === state.deviceId ? `${m.name} (you)` : m.name;
-      el.appendChild(chip);
+      const row = document.createElement('div');
+      row.className = 'member-row';
+
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar';
+      avatar.textContent = initials(m.name);
+      row.appendChild(avatar);
+
+      const info = document.createElement('div');
+      info.className = 'member-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'member-name';
+      nameEl.textContent = m.name;
+      if (m.deviceId === state.deviceId) {
+        const tag = document.createElement('span');
+        tag.className = 'you-tag';
+        tag.textContent = '(you)';
+        nameEl.appendChild(tag);
+      }
+      if (m.isOwner) {
+        const crown = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        crown.setAttribute('class', 'crown-icon');
+        crown.innerHTML = '<use href="#icon-crown"/>';
+        crown.setAttribute('title', 'Circle owner');
+        nameEl.appendChild(crown);
+      }
+      info.appendChild(nameEl);
+      row.appendChild(info);
+
+      if (iAmOwner && m.deviceId !== state.deviceId) {
+        const actions = document.createElement('div');
+        actions.className = 'member-actions';
+
+        const transferBtn = document.createElement('button');
+        transferBtn.className = 'icon-btn';
+        transferBtn.title = `Make ${m.name} the owner`;
+        transferBtn.innerHTML = '<svg><use href="#icon-crown"/></svg>';
+        transferBtn.addEventListener('click', () => transferOwner(m));
+        actions.appendChild(transferBtn);
+
+        const kickBtn = document.createElement('button');
+        kickBtn.className = 'icon-btn danger';
+        kickBtn.title = `Remove ${m.name}`;
+        kickBtn.innerHTML = '<svg><use href="#icon-user-x"/></svg>';
+        kickBtn.addEventListener('click', () => kickMember(m));
+        actions.appendChild(kickBtn);
+
+        row.appendChild(actions);
+      }
+
+      el.appendChild(row);
     }
   }
 
-  $('btn-leave').addEventListener('click', () => {
+  async function transferOwner(member) {
+    if (!confirm(`Make ${member.name} the owner of this circle? They'll be able to remove members and transfer leadership.`)) return;
+    try {
+      await api(`/api/circles/${state.circleId}/transfer-owner`, {
+        method: 'POST',
+        body: { deviceId: state.deviceId, newOwnerDeviceId: member.deviceId },
+      });
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  async function kickMember(member) {
+    if (!confirm(`Remove ${member.name} from this circle?`)) return;
+    try {
+      await api(`/api/circles/${state.circleId}/kick`, {
+        method: 'POST',
+        body: { deviceId: state.deviceId, targetDeviceId: member.deviceId },
+      });
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  $('btn-leave').addEventListener('click', async () => {
     if (!confirm('Leave this circle on this device?')) return;
+    try {
+      await api(`/api/circles/${state.circleId}/leave`, { method: 'POST', body: { deviceId: state.deviceId } });
+    } catch { /* circle or membership already gone, proceed anyway */ }
     if (ws) ws.close();
     clearIdentity();
     showView('onboarding');
@@ -195,24 +377,45 @@
 
   // ---------- Verify flow ----------
   $('btn-start-verify').addEventListener('click', async () => {
+    await refreshRoster();
+    const others = roster.filter((m) => m.deviceId !== state.deviceId);
+    if (others.length === 0) {
+      toast('No other members in this circle yet.');
+      return;
+    }
+    if (others.length === 1) {
+      startVerify(others[0]);
+      return;
+    }
+    renderPickerList('verify-picker-list', others, startVerify);
+    showView('verify-picker');
+  });
+
+  $('btn-verify-picker-cancel').addEventListener('click', () => showView('home'));
+
+  async function startVerify(member) {
     try {
-      const data = await api(`/api/circles/${state.circleId}/verify`, { method: 'POST', body: { deviceId: state.deviceId } });
+      const data = await api(`/api/circles/${state.circleId}/verify`, {
+        method: 'POST',
+        body: { deviceId: state.deviceId, targetDeviceId: member.deviceId },
+      });
       currentVerifySession = {
         sessionId: data.sessionId,
         challenge: data.challenge,
         startedAt: Date.now(),
         ttlMs: data.ttlMs,
         confirmWindowMs: data.confirmWindowMs,
-        initiatorName: state.memberName,
+        otherName: data.targetName,
       };
       renderVerifyActive();
       showView('verify-active');
     } catch (e) {
       toast(e.message);
     }
-  });
+  }
 
   function renderVerifyActive() {
+    $('verify-with-label').textContent = `Verifying with ${currentVerifySession.otherName} — say this code, both tap Confirm:`;
     $('verify-challenge').textContent = currentVerifySession.challenge;
     $('verify-confirm-list').textContent = '';
     $('btn-confirm-verify').disabled = false;
@@ -263,11 +466,11 @@
     box.className = 'result-box ' + (verified ? 'green' : 'red');
     if (verified) {
       const names = confirmations.map((c) => c.name).join(' & ');
-      $('verify-result-icon').textContent = '✅';
+      setIcon('verify-result-icon', 'check-circle');
       $('verify-result-title').textContent = `Verified: ${names} actively confirmed this call`;
       $('verify-result-sub').textContent = 'Both devices confirmed the same code within the time window.';
     } else {
-      $('verify-result-icon').textContent = '❌';
+      setIcon('verify-result-icon', 'x-circle');
       $('verify-result-title').textContent = 'Not verified';
       $('verify-result-sub').textContent = "The code expired before both people confirmed. Try again, or don't trust this call.";
     }
@@ -283,26 +486,17 @@
   $('btn-request-money').addEventListener('click', async () => {
     await refreshRoster();
     const others = roster.filter((m) => m.deviceId !== state.deviceId);
-    const el = $('money-picker-list');
-    el.innerHTML = '';
     if (others.length === 0) {
       toast('No other members in this circle yet.');
       return;
     }
-    for (const m of others) {
-      const chip = document.createElement('div');
-      chip.className = 'roster-chip';
-      chip.textContent = m.name;
-      chip.addEventListener('click', () => startMoneyCheck(m));
-      el.appendChild(chip);
-    }
+    renderPickerList('money-picker-list', others, startMoneyCheck);
     showView('money-picker');
   });
 
   $('btn-money-picker-cancel').addEventListener('click', () => showView('home'));
 
   async function startMoneyCheck(member) {
-    pendingMoneyTarget = member;
     $('money-waiting-name').textContent = member.name;
     showView('money-waiting');
     try {
@@ -326,17 +520,17 @@
     const box = $('money-result-box');
     if (answer === 'yes') {
       box.className = 'result-box green';
-      $('money-result-icon').textContent = '✅';
+      setIcon('money-result-icon', 'check-circle');
       $('money-result-title').textContent = `Verified: ${byName} confirms this money request is real`;
       $('money-result-sub').textContent = 'You can proceed, using your own judgment.';
     } else if (answer === 'no') {
       box.className = 'result-box red';
-      $('money-result-icon').textContent = '🛑';
+      setIcon('money-result-icon', 'x-circle');
       $('money-result-title').textContent = 'IDENTITY NOT VERIFIED';
       $('money-result-sub').textContent = `${byName} says they are NOT asking you for money. DO NOT SEND MONEY. This call may be a scam.`;
     } else {
       box.className = 'result-box amber';
-      $('money-result-icon').textContent = '⚠️';
+      setIcon('money-result-icon', 'alert-triangle');
       $('money-result-title').textContent = 'No response';
       $('money-result-sub').textContent = `${byName} did not respond in time. Could not verify — do not send money without confirming another way.`;
     }
