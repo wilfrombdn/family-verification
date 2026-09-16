@@ -2,13 +2,37 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const webpush = require('web-push');
+const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
+app.set('trust proxy', 1); // Render sits behind one reverse proxy — trust its X-Forwarded-For so rate limits key on the real client IP, not Render's shared proxy IP.
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// General ceiling on API traffic per IP — generous enough for normal multi-device
+// household use, tight enough to blunt scripted abuse.
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please slow down and try again shortly.' },
+});
+app.use('/api/', generalLimiter);
+
+// Tighter limit specifically on the circle-code guessing surface (join + the
+// live availability check), since those are the closest thing to a brute-force
+// target in this app.
+const codeGuessLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
+});
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/ws' });
@@ -160,7 +184,7 @@ app.post('/api/circles/:circleId/push-subscribe', (req, res) => {
 
 // ---------- Circle management ----------
 
-app.get('/api/circles/:circleId/available', (req, res) => {
+app.get('/api/circles/:circleId/available', codeGuessLimiter, (req, res) => {
   const code = normalizeCode(req.params.circleId);
   if (!CODE_PATTERN.test(code)) return res.json({ available: false, reason: 'invalid' });
   res.json({ available: !db.circles[code] });
@@ -193,7 +217,7 @@ app.post('/api/circles', (req, res) => {
 });
 
 // Joining requires owner approval — this creates a pending request, not membership.
-app.post('/api/circles/:circleId/join', (req, res) => {
+app.post('/api/circles/:circleId/join', codeGuessLimiter, (req, res) => {
   const { circleId } = req.params;
   const { memberName } = req.body || {};
   const circle = db.circles[circleId];
