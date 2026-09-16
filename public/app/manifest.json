@@ -1,11 +1,12 @@
 {
   "name": "Family Verify",
   "short_name": "FamVerify",
-  "start_url": "/",
+  "start_url": "/app/",
+  "scope": "/app/",
   "display": "standalone",
   "background_color": "#111827",
   "theme_color": "#1f2937",
   "icons": [
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }

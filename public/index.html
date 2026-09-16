@@ -4,118 +4,41 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Family Verify</title>
-<link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#1f2937">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="FamVerify">
-<link rel="apple-touch-icon" href="/icon.png">
-<link rel="stylesheet" href="/style.css">
+<link rel="apple-touch-icon" href="/app/icon.png">
+<link rel="icon" href="/app/icon.svg">
+<link rel="stylesheet" href="/landing.css">
 </head>
 <body>
 
-<div id="toast" class="toast hidden"></div>
-
-<!-- ONBOARDING -->
-<section id="view-onboarding" class="view">
+<main>
   <h1>Family Verify</h1>
   <p class="sub">Prove a phone call is really them &mdash; before anyone sends money.</p>
 
-  <div class="card">
-    <h2>Start a new Family Circle</h2>
-    <input id="create-circle-name" placeholder="Circle name (e.g. The Phillips Family)" maxlength="60">
-    <input id="create-your-name" placeholder="Your name" maxlength="40">
-    <button class="btn primary" id="btn-create-circle">Create Circle</button>
+  <a class="btn primary huge" href="/app/">Open the App (Web)</a>
+  <p class="hint">Works in any browser, right now, on any device. No install needed.</p>
+
+  <div class="card" id="android-card">
+    <h2>📱 Android</h2>
+    <p>Install a real app icon on your home screen.</p>
+    <a class="btn" href="/downloads/FamilyVerify.apk" download>Download for Android (.apk)</a>
+    <p class="hint">Your phone will warn about "unknown sources" since this isn't from the Play Store &mdash; that's expected, tap Install anyway.</p>
   </div>
 
-  <div class="card">
-    <h2>Join a Family Circle</h2>
-    <input id="join-code" placeholder="Circle code (e.g. AB3CQ9)" maxlength="6" style="text-transform:uppercase">
-    <input id="join-your-name" placeholder="Your name" maxlength="40">
-    <button class="btn" id="btn-join-circle">Join Circle</button>
-  </div>
-  <p id="onboarding-error" class="error hidden"></p>
-</section>
-
-<!-- HOME -->
-<section id="view-home" class="view hidden">
-  <div class="topbar">
-    <div>
-      <div class="circle-name" id="home-circle-name"></div>
-      <div class="circle-code">Circle code: <b id="home-circle-code"></b></div>
-    </div>
-    <button class="btn small ghost" id="btn-leave">Leave</button>
+  <div class="card" id="ios-card">
+    <h2>🍎 iPhone / iPad</h2>
+    <p>Apple doesn't allow installing apps outside the App Store without a developer account, so instead you add the app to your home screen from Safari &mdash; it behaves just like an installed app, full screen, no browser bar.</p>
+    <a class="btn" href="/app/" id="ios-open-link">Open in Safari</a>
+    <ol class="steps">
+      <li>Tap the <b>Share</b> icon (square with an arrow) at the bottom of Safari</li>
+      <li>Scroll down and tap <b>Add to Home Screen</b></li>
+      <li>Tap <b>Add</b> &mdash; the app icon now lives on your home screen</li>
+    </ol>
   </div>
 
-  <div class="roster" id="home-roster"></div>
+  <p class="footnote">Both the Android app and the home-screen version always show whatever is currently live on this site &mdash; nothing to redownload when the app is updated.</p>
+</main>
 
-  <button class="btn huge primary" id="btn-start-verify">✅ Verify This Call</button>
-  <p class="hint">Both people tap this during the call and confirm the same code within 10 seconds.</p>
-
-  <button class="btn huge danger" id="btn-request-money">💰 They're Requesting Money</button>
-  <p class="hint">Use this if the caller is asking you (or claiming to be someone) who wants money sent.</p>
-</section>
-
-<!-- VERIFY: waiting for connection -->
-<section id="view-verify-active" class="view hidden">
-  <div class="challenge-box">
-    <div class="challenge-label">Say this code out loud, then both tap Confirm:</div>
-    <div class="challenge-code" id="verify-challenge">— — —</div>
-    <div class="countdown" id="verify-countdown"></div>
-  </div>
-  <button class="btn huge primary" id="btn-confirm-verify">Confirm — This Is Us</button>
-  <div class="confirm-list" id="verify-confirm-list"></div>
-  <button class="btn ghost" id="btn-cancel-verify">Cancel</button>
-</section>
-
-<!-- VERIFY: result -->
-<section id="view-verify-result" class="view hidden">
-  <div class="result-box" id="verify-result-box">
-    <div class="result-icon" id="verify-result-icon"></div>
-    <div class="result-title" id="verify-result-title"></div>
-    <div class="result-sub" id="verify-result-sub"></div>
-  </div>
-  <button class="btn huge" id="btn-verify-done">Done</button>
-</section>
-
-<!-- MONEY: pick who the caller claims to be -->
-<section id="view-money-picker" class="view hidden">
-  <h2>Who does the caller claim to be?</h2>
-  <p class="hint">We'll ask that person right now whether they're really asking you for money.</p>
-  <div class="roster picker" id="money-picker-list"></div>
-  <button class="btn ghost" id="btn-money-picker-cancel">Cancel</button>
-</section>
-
-<!-- MONEY: waiting for response -->
-<section id="view-money-waiting" class="view hidden">
-  <div class="challenge-box">
-    <div class="spinner"></div>
-    <div class="challenge-label" id="money-waiting-label">Asking <span id="money-waiting-name"></span> to confirm&hellip;</div>
-  </div>
-  <button class="btn ghost" id="btn-money-waiting-cancel">Cancel</button>
-</section>
-
-<!-- MONEY: incoming check (the other family member answers YES/NO) -->
-<section id="view-money-incoming" class="view hidden">
-  <div class="result-box amber">
-    <div class="result-icon">⚠️</div>
-    <div class="result-title"><span id="money-incoming-name"></span> is trying to verify a financial request.</div>
-    <div class="result-sub">Are you currently asking them for money?</div>
-  </div>
-  <button class="btn huge primary" id="btn-money-yes">YES — I am asking for money</button>
-  <button class="btn huge danger" id="btn-money-no">NO — I am not</button>
-</section>
-
-<!-- MONEY: result -->
-<section id="view-money-result" class="view hidden">
-  <div class="result-box" id="money-result-box">
-    <div class="result-icon" id="money-result-icon"></div>
-    <div class="result-title" id="money-result-title"></div>
-    <div class="result-sub" id="money-result-sub"></div>
-  </div>
-  <button class="btn huge" id="btn-money-done">Done</button>
-</section>
-
-<script src="/app.js"></script>
+<script src="/landing.js"></script>
 </body>
 </html>
